@@ -1,6 +1,19 @@
---find-links https://storage.googleapis.com/torch-cpu/torch_stable.html
-torch
-torchvision
+# Hugging Face Spaces often prefer CPU torch wheels
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+gradio>=4.44.1
+fastapi
+uvicorn
+
+pypdf
+python-docx
+numpy
+scikit-learn
+
+sentence-transformers
+transformers
+torch==2.2.2
+torchvision==0.17.2
 
 gradio
 scikit-learn
