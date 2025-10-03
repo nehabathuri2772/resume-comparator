@@ -1,26 +1,28 @@
-# Hugging Face Spaces often prefer CPU torch wheels
+
+# Force CPU wheels for torch on Spaces
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-gradio>=4.44.1
-fastapi
-uvicorn
-
-pypdf
-python-docx
-numpy
-scikit-learn
-
-sentence-transformers
-transformers
+# ===== Core pins to fix your crash =====
+numpy==1.26.4          # <- solves "A module compiled for NumPy 1.x cannot run on 2.x"
+scipy<1.11             # (optional but safer with numpy 1.26)
 torch==2.2.2
 torchvision==0.17.2
 
-gradio
-scikit-learn
-numpy
-PyMuPDF
+# ===== Your app libs =====
+gradio>=4.44.1
+pypdf
 python-docx
 sentence-transformers
 transformers
+scikit-learn
+
+pypdf
+python-docx
+scikit-learn
+
+sentence-transformers
+transformers
+PyMuPDF
+python-docx
 wordcloud
 matplotlib
