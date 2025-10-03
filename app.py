@@ -1,393 +1,358 @@
-import io
 import os
+import io
 import re
 import tempfile
-import traceback
-from typing import Tuple, Dict
-
-import fitz  # PyMuPDF
-import docx  # python-docx
+from typing import List, Tuple, Dict, Any
 
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
 import gradio as gr
 
-# --------------------------
-# Pre-load all heavy libraries and models at startup.
-# --------------------------
-print("Starting up: Loading transformer models...")
+# ---------- Text + file utils ----------
+from pypdf import PdfReader
+try:
+    import docx  # python-docx
+    HAS_DOCX = True
+except Exception:
+    HAS_DOCX = False
+
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Embedding stacks
 from sentence_transformers import SentenceTransformer
-from transformers import BertTokenizer, BertModel
+from transformers import AutoTokenizer, AutoModel
 import torch
 
-# Load models into memory once when the application starts
-sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
-bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-bert_model = BertModel.from_pretrained("bert-base-uncased")
-bert_model.eval()
-print("Transformer models loaded successfully.")
+# ---------- Embedders (lazy / cached) ----------
+_SBERT_MODEL_NAME = os.environ.get("SBERT_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+_BERT_MODEL_NAME  = os.environ.get("BERT_MODEL",  "bert-base-uncased")
 
-# --------------------------
-# Built-in stopwords
-# --------------------------
-EN_STOPWORDS = {
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as",
-    "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
-    "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further",
-    "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself", "his",
-    "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just", "me", "more", "most", "my",
-    "myself", "no", "nor", "not", "now", "of", "off", "on", "once", "only", "or", "other", "ought", "our",
-    "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so", "some", "such", "than",
-    "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this",
-    "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were", "what", "when",
-    "where", "which", "while", "who", "whom", "why", "with", "would", "you", "your", "yours", "yourself",
-    "yourselves", "resume", "job", "description", "work", "experience", "skill", "skills", "applicant", "application"
-}
-
-# --------------------------
-# Job Suggestions Database
-# --------------------------
-JOB_SUGGESTIONS_DB = {
-    "Data Scientist": {"python", "sql", "machine", "learning", "tensorflow", "pytorch", "analysis"},
-    "Data Analyst": {"sql", "python", "excel", "tableau", "analysis", "statistics"},
-    "Backend Developer": {"python", "java", "sql", "docker", "aws", "api", "git"},
-    "Frontend Developer": {"react", "javascript", "html", "css", "git", "ui", "ux"},
-    "Full-Stack Developer": {"python", "javascript", "react", "sql", "docker", "git"},
-    "Machine Learning Engineer": {"python", "tensorflow", "pytorch", "machine", "learning", "docker", "cloud"},
-    "Project Manager": {"agile", "scrum", "project", "management", "jira"}
-}
+_Sbert: SentenceTransformer | None = None
+_BertTok: AutoTokenizer | None = None
+_Bert: AutoModel | None = None
 
 
-# --------------------------
-# Utilities: text extraction
-# --------------------------
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        pages = [p.get_text("text") for p in doc]
-        doc.close()
-        return "\n".join(p for p in pages if p)
-    except Exception as e:
-        return f"[Error reading PDF: {e}]"
+def _load_sbert() -> SentenceTransformer:
+    global _Sbert
+    if _Sbert is None:
+        _Sbert = SentenceTransformer(_SBERT_MODEL_NAME)
+    return _Sbert
 
 
-def extract_text_from_docx_bytes(docx_bytes: bytes) -> str:
-    try:
-        docx_io = io.BytesIO(docx_bytes)
-        doc = docx.Document(docx_io)
-        paragraphs = [p.text for p in doc.paragraphs if p.text]
-        return "\n".join(paragraphs)
-    except Exception as e:
-        return f"[Error reading DOCX: {e}]"
+def _load_bert():
+    global _BertTok, _Bert
+    if _BertTok is None or _Bert is None:
+        _BertTok = AutoTokenizer.from_pretrained(_BERT_MODEL_NAME)
+        _Bert    = AutoModel.from_pretrained(_BERT_MODEL_NAME)
+        _Bert.eval()
+    return _BertTok, _Bert
 
 
-def extract_text_from_fileobj(file_obj) -> Tuple[str, str]:
-    fname = "uploaded_file"
-    try:
-        fname = os.path.basename(file_obj.name)
-        with open(file_obj.name, "rb") as f:
-            raw_bytes = f.read()
-        ext = fname.split('.')[-1].lower()
-        if ext == "pdf":
-            return (extract_text_from_pdf_bytes(raw_bytes), fname)
-        elif ext == "docx":
-            return (extract_text_from_docx_bytes(raw_bytes), fname)
-        else:
-            return (raw_bytes.decode("utf-8", errors="ignore"), fname)
-    except Exception as exc:
-        return (f"[Error reading uploaded file: {exc}\n{traceback.format_exc()}]", fname)
+# ---------- Core helpers ----------
+def extract_text_from_fileobj(fileobj) -> str:
+    """
+    Accepts an object with `.name` (path on disk) or a (name, bytes) tuple.
+    Returns extracted text for PDF/DOCX/TXT.
+    """
+    # Support (filename, bytes) tuples (used by API path)
+    if isinstance(fileobj, tuple) and len(fileobj) == 2 and isinstance(fileobj[1], (bytes, bytearray)):
+        filename, data = fileobj
+        suffix = os.path.splitext(filename)[1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".txt") as tmp:
+            tmp.write(data)
+            tmp.flush()
+            path = tmp.name
+    else:
+        # Gradio File component gives an object with .name path
+        path = getattr(fileobj, "name", None)
+        if not path:
+            return ""
+
+    name = path.lower()
+    if name.endswith(".pdf"):
+        text_parts = []
+        with open(path, "rb") as f:
+            reader = PdfReader(f)
+            for p in reader.pages:
+                try:
+                    text_parts.append(p.extract_text() or "")
+                except Exception:
+                    text_parts.append("")
+        return "\n".join(text_parts).strip()
+
+    if (name.endswith(".docx") or name.endswith(".doc")) and HAS_DOCX:
+        d = docx.Document(path)
+        return "\n".join(p.text for p in d.paragraphs).strip()
+
+    # Fallback: treat as text
+    with open(path, "rb") as f:
+        try:
+            return f.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
 
 
-# --------------------------
-# Text preprocessing
-# --------------------------
-def preprocess_text(text: str, remove_stopwords: bool = True) -> str:
+def preprocess_text(s: str) -> str:
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s
+
+
+def embed_sbert(texts: List[str]) -> np.ndarray:
+    model = _load_sbert()
+    vecs = model.encode(texts, normalize_embeddings=True)
+    return np.asarray(vecs)
+
+
+@torch.no_grad()
+def embed_bert_mean(texts: List[str]) -> np.ndarray:
+    tok, mdl = _load_bert()
+    # mean-pool last hidden state
+    outs: List[np.ndarray] = []
+    for t in texts:
+        enc = tok(
+            t if t else "",
+            truncation=True,
+            max_length=512,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        out = mdl(**enc)
+        last_hidden = out.last_hidden_state  # [1, 512, hidden]
+        mask = enc["attention_mask"]         # [1, 512]
+        mask = mask.unsqueeze(-1).expand(last_hidden.size()).float()
+        summed = (last_hidden * mask).sum(dim=1)
+        counts = mask.sum(dim=1).clamp(min=1e-9)
+        mean   = (summed / counts).squeeze(0).cpu().numpy()
+        outs.append(mean / (np.linalg.norm(mean) + 1e-9))
+    return np.vstack(outs)
+
+
+def embed_texts(texts: List[str], mode: str = "sbert") -> np.ndarray:
+    mode = (mode or "sbert").lower()
+    if mode == "bert":
+        return embed_bert_mean(texts)
+    # default
+    return embed_sbert(texts)
+
+
+def cosine(a: np.ndarray, b: np.ndarray) -> float:
+    return float(cosine_similarity(a.reshape(1, -1), b.reshape(1, -1))[0][0])
+
+
+def top_keywords(text: str, n: int = 20) -> List[str]:
     if not text:
-        return ""
-    t = text.lower()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^a-z0-9\s]", " ", t)
-    words = t.split()
-    if remove_stopwords:
-        words = [w for w in words if w not in EN_STOPWORDS]
-    return " ".join(words)
+        return []
+    vec = TfidfVectorizer(stop_words="english", max_features=4096)
+    X = vec.fit_transform([text])
+    inds = np.argsort(-X.toarray()[0])[:n]
+    inv = {v: k for k, v in vec.vocabulary_.items()}
+    return [inv[i] for i in inds if i in inv]
 
 
-# --------------------------
-# Embedding helpers
-# --------------------------
-def get_sentence_embedding(text: str, mode: str = "sbert") -> np.ndarray:
-    if mode == "sbert":
-        return sentence_transformer.encode([text], show_progress_bar=False)
-    elif mode == "bert":
-        tokens = bert_tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
-        with torch.no_grad():
-            out = bert_model(**tokens)
-            cls = out.last_hidden_state[:, 0, :].numpy()
-        return cls
-    else:
-        raise ValueError("Unsupported mode")
+def simple_highlights(resume_text: str, job_text: str, top_k: int = 8, mode: str = "sbert") -> List[str]:
+    sentences = [s.strip() for s in re.split(r"[.\n]", job_text) if s.strip()]
+    if not sentences:
+        return []
+    rvec = embed_texts([resume_text], mode=mode)[0]
+    svecs = embed_texts(sentences, mode=mode)
+    sims = cosine_similarity([rvec], svecs)[0]
+    idxs = np.argsort(-sims)[:top_k]
+    return [f"{sentences[i]}  (sim={sims[i]:.2f})" for i in idxs]
 
 
-def calculate_similarity(resume_text: str, job_text: str, mode: str = "sbert") -> float:
-    r_emb = get_sentence_embedding(resume_text, mode=mode)
-    j_emb = get_sentence_embedding(job_text, mode=mode)
-    sim = cosine_similarity(r_emb, j_emb)[0][0]
-    return float(np.round(sim * 100, 2))
+# ---------- Analysis ----------
+def analyze_resumes(fileobjs: List[object], job_description: str, mode: str = "sbert"):
+    jd = preprocess_text(job_description)
+    if not jd:
+        raise ValueError("Job description is empty.")
 
-
-# --------------------------
-# Keyword analysis
-# --------------------------
-DEFAULT_KEYWORDS = {
-    "skills": {"python", "nlp", "java", "sql", "tensorflow", "pytorch", "docker", "git", "react", "cloud", "aws",
-               "azure"},
-    "concepts": {"machine", "learning", "data", "analysis", "nlp", "vision", "agile", "scrum"},
-    "roles": {"software", "engineer", "developer", "manager", "scientist", "analyst", "architect"},
-}
-
-
-def analyze_resume_keywords(resume_text: str, job_description: str):
-    clean_resume = preprocess_text(resume_text)
-    clean_job = preprocess_text(job_description)
-    resume_words = set(clean_resume.split())
-    job_words = set(clean_job.split())
-    missing = {}
-    for cat, kws in DEFAULT_KEYWORDS.items():
-        missing_from_cat = [kw for kw in kws if kw in job_words and kw not in resume_words]
-        if missing_from_cat:
-            missing[cat] = sorted(missing_from_cat)
-    low_resume = (resume_text or "").lower()
-    sections_present = {
-        "skills": "skills" in low_resume,
-        "experience": "experience" in low_resume or "employment" in low_resume,
-        "summary": "summary" in low_resume or "objective" in low_resume,
-    }
-    suggestions = []
-    if any(missing.values()):
-        for cat, kws in missing.items():
-            for kw in kws:
-                if cat == "skills":
-                    suggestions.append(f"Add keyword '{kw}' to your Skills section." if sections_present[
-                        "skills"] else f"Consider creating a Skills section to include '{kw}'.")
-                elif cat == "concepts":
-                    suggestions.append(
-                        f"Try to demonstrate your knowledge of '{kw}' in your Experience or Projects section.")
-                elif cat == "roles":
-                    suggestions.append(f"Align your Summary/Objective to mention the title '{kw}'.")
-    else:
-        suggestions.append("Great job! Your resume contains many of the keywords found in the job description.")
-    return missing, "\n".join(f"- {s}" for s in suggestions)
-
-
-# --------------------------
-# Project Section Analysis
-# --------------------------
-def extract_projects_section(resume_text: str) -> str:
-    project_headings = ["projects", "personal projects", "academic projects", "portfolio"]
-    end_headings = [
-        "skills", "technical skills", "experience", "work experience",
-        "education", "awards", "certifications", "languages", "references"
-    ]
-    lines = resume_text.split('\n')
-    start_index = -1
-    end_index = len(lines)
-    for i, line in enumerate(lines):
-        cleaned_line = line.strip().lower()
-        if cleaned_line in project_headings:
-            start_index = i
-            break
-    if start_index == -1:
-        return "Could not automatically identify a 'Projects' section in this resume."
-    for i in range(start_index + 1, len(lines)):
-        cleaned_line = line.strip().lower()
-        if len(cleaned_line.split()) < 4 and cleaned_line in end_headings:
-            end_index = i
-            break
-    project_section_lines = lines[start_index:end_index]
-    return "\n".join(project_section_lines)
-
-
-def analyze_projects_fit(projects_text: str, job_description_text: str, mode: str) -> str:
-    if projects_text.startswith("Could not"):
-        return "Cannot analyze project fit as no projects section was found."
-
-    cleaned_projects = preprocess_text(projects_text)
-    cleaned_job = preprocess_text(job_description_text)
-
-    if not cleaned_projects:
-        return "Projects section is empty or contains no relevant text to analyze."
-
-    project_fit_score = calculate_similarity(cleaned_projects, cleaned_job, mode=mode)
-
-    if project_fit_score >= 75:
-        verdict = f"<p style='color:green;'>✅ **Highly Relevant ({project_fit_score:.2f}%):** The projects listed are an excellent match for this job's requirements.</p>"
-    elif project_fit_score >= 50:
-        verdict = f"<p style='color:limegreen;'>👍 **Relevant ({project_fit_score:.2f}%):** The projects show relevant skills and experience for this role.</p>"
-    else:
-        verdict = f"<p style='color:orange;'>⚠️ **Moderately Relevant ({project_fit_score:.2f}%):** The projects may not directly align with the key requirements. Consider highlighting different aspects of your work.</p>"
-
-    return verdict
-
-
-# --------------------------
-# Formatting and Suggestion Functions
-# --------------------------
-def format_missing_keywords(missing: Dict) -> str:
-    if not any(missing.values()):
-        return "✅ No critical keywords seem to be missing. Great job!"
-    output = "### 🔑 Keywords Missing From Your Resume\n"
-    for category, keywords in missing.items():
-        if keywords:
-            output += f"**Missing {category.capitalize()}:** {', '.join(keywords)}\n"
-    return output
-
-
-def suggest_jobs(resume_text: str) -> str:
-    resume_words = set(preprocess_text(resume_text).split())
-    suggestions = []
-    for job_title, required_skills in JOB_SUGGESTIONS_DB.items():
-        matched_skills = resume_words.intersection(required_skills)
-        if len(matched_skills) >= 3:
-            suggestions.append(job_title)
-    if not suggestions:
-        return "Could not determine strong job matches from the resume. Try adding more specific skills and technologies."
-    output = "### 🚀 Job Titles You May Be a Good Fit For\n"
-    for job in suggestions:
-        output += f"- {job}\n"
-    return output
-
-
-def extract_top_keywords(text: str, top_n: int = 15) -> str:
-    if not text.strip():
-        return "Not enough text provided."
-    try:
-        vectorizer = TfidfVectorizer(stop_words=list(EN_STOPWORDS))
-        tfidf_matrix = vectorizer.fit_transform([text])
-        feature_names = np.array(vectorizer.get_feature_names_out())
-        scores = tfidf_matrix.toarray().flatten()
-        top_indices = scores.argsort()[-top_n:][::-1]
-        top_keywords = feature_names[top_indices]
-        return ", ".join(top_keywords)
-    except ValueError:
-        return "Could not extract keywords (text may be too short)."
-
-
-# --------------------------
-# Main Gradio app logic
-# --------------------------
-def analyze_resumes(files, job_description: str, mode: str):
-    if not files or not job_description.strip():
-        return 0.0, "Please upload resumes and paste a job description.", "", "", "", "", "", "", "", ""
+    jd_vec = embed_texts([jd], mode=mode)[0]
+    jd_kw  = top_keywords(jd, n=25)
 
     results = []
-    for file in files:
-        try:
-            resume_text, fname = extract_text_from_fileobj(file)
-            if resume_text.strip().startswith("[Error"):
-                continue  # Skip errored files
-            cleaned_resume = preprocess_text(resume_text)
-            cleaned_job = preprocess_text(job_description)
-            sim_pct = calculate_similarity(cleaned_resume, cleaned_job, mode=mode)
-            results.append((sim_pct, resume_text, fname))
-        except Exception:
-            continue  # Skip if any error
+    best = None
 
-    if not results:
-        return 0.0, "No valid resumes were provided.", "", "", "", "", "", "", "", ""
+    for f in fileobjs:
+        text = preprocess_text(extract_text_from_fileobj(f))
+        if not text:
+            results.append({
+                "filename": getattr(f, "name", (f[0] if isinstance(f, tuple) else "unknown")),
+                "error": "No text extracted"
+            })
+            continue
 
-    # Select the best matching resume
-    best = max(results, key=lambda x: x[0])  # highest similarity
-    sim_pct, resume_text, fname = best
+        rvec  = embed_texts([text], mode=mode)[0]
+        score = cosine(rvec, jd_vec)  # 0..1
+        score_pct = round(max(0.0, min(1.0, score)) * 100, 2)
 
-    missing_dict, suggestions_text = analyze_resume_keywords(resume_text, job_description)
-    missing_formatted = format_missing_keywords(missing_dict)
-    job_suggestions = suggest_jobs(resume_text)
-    projects_section = extract_projects_section(resume_text)
-    project_fit_verdict = analyze_projects_fit(projects_section, job_description, mode)
-    resume_keywords_text = extract_top_keywords(preprocess_text(resume_text))
-    jd_keywords_text = extract_top_keywords(preprocess_text(job_description))
+        r_kw = set(top_keywords(text, n=25))
+        jd_k = set(jd_kw)
+        missing = sorted(list(jd_k - r_kw))[:25]
+        overlap = sorted(list(jd_k & r_kw))[:25]
 
-    verdict = f"<h3 style='color:green;'>✅ Best Match: {fname} ({sim_pct:.2f}%)</h3>" if sim_pct >= 80 else \
-        f"<h3 style='color:limegreen;'>👍 Best Match: {fname} ({sim_pct:.2f}%)</h3>" if sim_pct >= 60 else \
-        f"<h3 style='color:orange;'>⚠️ Best Match: {fname} ({sim_pct:.2f}%)</h3>" if sim_pct >= 40 else \
-        f"<h3 style='color:red;'>❌ Low Match: {fname} ({sim_pct:.2f}%)</h3>"
+        highlights = simple_highlights(text, jd, top_k=8, mode=mode)
+
+        item = {
+            "filename": os.path.basename(getattr(f, "name", (f[0] if isinstance(f, tuple) else "resume"))),
+            "chars": len(text),
+            "similarity": score_pct,
+            "overlap_keywords": overlap,
+            "missing_keywords": missing,
+            "highlights": highlights,
+        }
+        results.append(item)
+        if (best is None) or (item["similarity"] > best["similarity"]):
+            best = item
+
+    verdict_md = ""
+    missing_md = ""
+    if best:
+        verdict_md = f"### Best Match: **{best['filename']}**  \n**Similarity:** {best['similarity']}%"
+    # basic missing keywords markdown (for the best one)
+    if best and best.get("missing_keywords"):
+        missing_md = "### Keywords Missing From Your Resume\n- " + "\n- ".join(best["missing_keywords"])
+    else:
+        missing_md = "### No obvious missing keywords detected."
+
+    suggestions_text = (
+        "- Make sure the top skills from the JD appear in your resume summary.\n"
+        "- Add concrete metrics (%, $, time saved) for your relevant projects.\n"
+        "- Mirror phrasing from the JD where truthful (helps ATS)."
+    )
+
+    # Backward-compatible tuple style (as referenced earlier)
+    best_fname = best["filename"] if best else None
+    projects_section = ""  # placeholder
+    project_fit_verdict = f"Resolved with mode: **{mode}**."
+
+    resume_keywords_text = ", ".join(sorted(set().union(*[set(r.get("overlap_keywords", [])) for r in results])))
+    jd_keywords_text = ", ".join(jd_kw)
 
     return (
-        float(sim_pct), verdict, missing_formatted, suggestions_text,
-        job_suggestions, projects_section, project_fit_verdict, resume_keywords_text, jd_keywords_text, fname
+        best["similarity"] if best else 0.0,           # score (best)
+        verdict_md,                                     # verdict markdown
+        missing_md,                                     # missing keywords markdown
+        suggestions_text,                               # improvement suggestions
+        "",                                             # job_suggestions (unused here)
+        projects_section,                               # projects section
+        project_fit_verdict,                            # project fit verdict markdown
+        resume_keywords_text,                           # resume top keywords (string)
+        jd_keywords_text,                               # jd top keywords (string)
+        best_fname,                                     # best filename
     )
 
 
-# --------------------------
-# Clear Button Logic
-# --------------------------
-def clear_inputs():
-    return None, "", "sbert", None, None, None, None, None, None, None, None
-
-
-# --------------------------
-# Build Gradio UI
-# --------------------------
+# ---------- Gradio UI ----------
 def build_ui():
-    with gr.Blocks(theme=gr.themes.Default(), title="Resume ↔ Job Matcher") as demo:
-        gr.Markdown("# 📄 Resume & Job Description Analyzer 🎯")
-        gr.Markdown(
-            "Upload a resume, paste a job description, and get an instant analysis, keyword suggestions, and potential job matches.")
+    with gr.Blocks(title="Resume Comparator") as demo:
+        gr.Markdown("## Resume Comparator — UI + API\nUpload one or more resumes and paste a JD. Use the API at **/api/analyze**.")
 
         with gr.Row():
-            with gr.Column(scale=2):
-                file_in = gr.File(label="Upload resumes (PDF or DOCX)", file_count="multiple",
-                  file_types=[".pdf", ".docx"])
-                job_desc = gr.Textbox(lines=10, label="Job Description",
-                                      placeholder="Paste the full job description here...")
-                mode = gr.Radio(choices=["sbert", "bert"], value="sbert", label="Analysis Mode",
-                                info="SBERT is faster, BERT is more detailed.")
-                with gr.Row():
-                    clear_btn = gr.Button("Clear")
-                    run_btn = gr.Button("Analyze Resume", variant="primary")
+            mode = gr.Radio(choices=["sbert", "bert"], value="sbert", label="Embedding mode")
+        jd   = gr.Textbox(label="Job Description", lines=10, placeholder="Paste JD here...")
+        files = gr.Files(label="Resumes (PDF/DOCX/TXT)", file_count="multiple",
+                         file_types=[".pdf", ".docx", ".doc", ".txt"])
 
-            with gr.Column(scale=3):
-                with gr.Tabs():
-                    with gr.TabItem("📊 Analysis & Suggestions"):
-                        score_slider = gr.Slider(value=0, minimum=0, maximum=100, step=0.01, interactive=False,
-                                                 label="Similarity Score")
-                        score_text = gr.Markdown()
-                        suggestions_out = gr.Textbox(label="Suggestions to Improve Your Resume", interactive=False,
-                                                     lines=5)
-                        missing_out = gr.Markdown(label="Keywords Check")
+        with gr.Row():
+            verdict = gr.Markdown(label="Verdict")
+            missing = gr.Markdown(label="Missing keywords")
+        with gr.Row():
+            tips    = gr.Markdown(label="Suggestions")
+            summary = gr.JSON(label="Per-resume summary (JSON)")
 
-                    with gr.TabItem("🛠️ Project Analysis"):
-                        project_fit_out = gr.Markdown(label="Project Fit Verdict")
-                        projects_out = gr.Textbox(label="Extracted Projects Section", interactive=False, lines=12)
+        def _run(mode_val, jd_text, files_list):
+            if not jd_text:
+                raise gr.Error("Please paste a job description.")
+            fileobjs = files_list or []
+            res = analyze_resumes(fileobjs, jd_text, mode=mode_val)
+            score, verdict_md, missing_md, suggestions_text, _, _, project_fit, resume_kw, jd_kw, best_name = res
 
-                    with gr.TabItem("🚀 Job Suggestions"):
-                        job_suggestions_out = gr.Markdown(label="Potential Job Roles")
+            per_resume = []
+            # re-run lightweight loop to show per-resume JSON
+            for f in fileobjs:
+                fname = os.path.basename(getattr(f, "name", "resume"))
+                txt = preprocess_text(extract_text_from_fileobj(f))
+                if not txt:
+                    per_resume.append({"filename": fname, "error": "No text"})
+                    continue
+                sim = cosine(embed_texts([txt], mode=mode_val)[0], embed_texts([jd_text], mode=mode_val)[0])
+                per_resume.append({"filename": fname, "similarity": round(float(sim)*100, 2)})
 
-                    with gr.TabItem("🔑 Top Keywords"):
-                        resume_keywords_out = gr.Textbox(label="Top Resume Keywords")
-                        jd_keywords_out = gr.Textbox(label="Top Job Description Keywords")
+            verdict_out = verdict_md + f"\n\n{project_fit}"
+            return verdict_out, missing_md, suggestions_text, per_resume
 
-        run_btn.click(
-            analyze_resumes,
-            inputs=[file_in, job_desc, mode],
-            outputs=[score_slider, score_text, missing_out, suggestions_out, job_suggestions_out, projects_out,
-                    project_fit_out, resume_keywords_out, jd_keywords_out, gr.Textbox(label="Best Match Filename")],
-            show_progress='full'
-        )
-
-        clear_btn.click(
-            clear_inputs,
-            inputs=[],
-            outputs=[file_in, job_desc, mode, score_slider, score_text, missing_out, suggestions_out,
-                     job_suggestions_out, projects_out, project_fit_out, resume_keywords_out, jd_keywords_out]
+        gr.Button("Analyze").click(
+            _run, inputs=[mode, jd, files],
+            outputs=[verdict, missing, tips, summary]
         )
 
     return demo
 
 
-if __name__ == "__main__":
-    demo = build_ui()
-    demo.launch()
-    #demo.launch(server_name="0.0.0.0")
+# ---------- FASTAPI: JSON API + mount UI ----------
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+
+api = FastAPI(title="Resume Comparator API", version="1.0.0")
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+def _uploadfiles_to_temp(files: List[UploadFile]) -> List[object]:
+    """Convert FastAPI UploadFile list → objects with .name on disk."""
+    out = []
+    for uf in files:
+        data = uf.file.read()
+        suffix = os.path.splitext(uf.filename or "file")[1] or ".txt"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.write(data)
+        tmp.flush()
+        tmp.close()
+        class _Shim: pass
+        s = _Shim(); s.name = tmp.name
+        out.append(s)
+    return out
+
+@api.post("/api/analyze")
+def analyze_endpoint(
+    job_description: str = Form(...),
+    mode: str = Form("sbert"),
+    files: List[UploadFile] = File(...),
+):
+    fileobjs = _uploadfiles_to_temp(files)
+    try:
+        (
+            score, verdict, missing_formatted, suggestions_text,
+            job_suggestions, projects_section, project_fit_verdict,
+            resume_keywords_text, jd_keywords_text, best_fname
+        ) = analyze_resumes(fileobjs, job_description, mode)
+    finally:
+        for fo in fileobjs:
+            try:
+                os.unlink(fo.name)
+            except Exception:
+                pass
+
+    return {
+        "best_match_filename": best_fname,
+        "similarity_score": score,
+        "verdict_markdown": verdict,
+        "missing_keywords_markdown": missing_formatted,
+        "improvement_suggestions": suggestions_text,
+        "project_fit_verdict_markdown": project_fit_verdict,
+        "projects_section_text": projects_section,
+        "resume_top_keywords": resume_keywords_text,
+        "job_top_keywords": jd_keywords_text,
+        "mode_used": mode,
+    }
+
+@api.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+# Mount the Gradio UI at root
+demo = build_ui()
+app = gr.mount_gradio_app(api, demo, path="/")
