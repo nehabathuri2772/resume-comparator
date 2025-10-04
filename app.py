@@ -133,10 +133,10 @@ THEME = gr.themes.Soft(
     primary_hue="indigo",
     secondary_hue="slate",
     neutral_hue="slate",
-).set(body_text_size="14px", radius_md="14px")
+)  # <- no .set(...)
 
 CSS = """
-.gradio-container .file-preview svg { width: 96px !important; height: 96px !important; }
+/* simple rounded cards & spacing */
 .card { border: 1px solid #e9ecef; border-radius: 14px; padding: 14px; background: #fff; }
 """
 
