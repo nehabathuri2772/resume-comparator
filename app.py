@@ -277,8 +277,3 @@ Paste your resume and a job description to get a quick overlap score powered by 
                 _clear,
                 outputs=[score_card, chips, notes, json_out]
             )
-
-        with gr.TabItem("API"):
-            gr.Markdown("")
-**Endpoint**
-
