@@ -1,16 +1,15 @@
-# app.py
 # FastAPI + Gradio (mounted). Resume is uploaded as a file (PDF/DOCX/TXT).
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import gradio as gr
 import io
 import os
 from typing import Tuple
 
-# ----- optional: remove if not needed -----
-# Lightweight text extraction deps (CPU only)
+# --- Lightweight CPU-only text extraction ---
 from pypdf import PdfReader
 from docx import Document
 
@@ -94,7 +93,7 @@ def compare_resumes(resume_text: str, jd_text: str) -> dict:
     }
 
 # ----------------------------
-# FastAPI app (global `app`)
+# FastAPI app (global `api`)
 # ----------------------------
 api = FastAPI(title="Resume Comparator API", version="1.1")
 
@@ -110,7 +109,7 @@ api.add_middleware(
 def healthz():
     return {"status": "ok"}
 
-# ---- JSON text API (kept for convenience)
+# ---- JSON text API
 class ComparePayload(BaseModel):
     resume_text: str
     job_description: str
@@ -119,23 +118,31 @@ class ComparePayload(BaseModel):
 def analyze(payload: ComparePayload):
     return compare_resumes(payload.resume_text, payload.job_description)
 
-# ---- NEW: multipart API: file upload + jd_text
+# ---- Multipart API: file upload + jd_text
 @api.post("/api/analyze-file")
 async def analyze_file(file: UploadFile = File(...), jd_text: str = Form(...)):
     data = await file.read()
     resume_text = extract_text_from_bytes(file.filename, data)
     result = compare_resumes(resume_text, jd_text)
-    return {
-        "filename": file.filename,
-        "result": result
-    }
+    return {"filename": file.filename, "result": result}
 
 # ----------------------------
-# Gradio UI (file upload)
+# Gradio UI
 # ----------------------------
+THEME = gr.themes.Soft(
+    primary_hue="indigo",
+    secondary_hue="slate",
+    neutral_hue="slate",
+).set(body_text_size="14px", radius_md="14px")
+
+CSS = """
+.gradio-container .file-preview svg { width: 96px !important; height: 96px !important; }
+.card { border: 1px solid #e9ecef; border-radius: 14px; padding: 14px; background: #fff; }
+"""
+
 def gradio_compare_with_file(resume_file_path, jd_text):
     """
-    resume_file_path: filepath (Gradio's default for gr.File)
+    resume_file_path: filepath (Gradio's default for gr.File with type='filepath')
     """
     text, msg = extract_text_from_path(resume_file_path) if resume_file_path else ("", "No file.")
     if not text:
@@ -151,25 +158,35 @@ def gradio_compare_with_file(resume_file_path, jd_text):
         "Top missing terms:",
         ", ".join(result["missing_terms"]) or "-",
         "",
-        result["notes"]
+        result["notes"],
     ]
     return "\n".join(pretty)
 
-with gr.Blocks() as demo:
+with gr.Blocks(theme=THEME, css=CSS) as demo:
     gr.Markdown(
-        "# Resume Comparator (File Upload)\n"
+        "# 📄 Resume Comparator (File Upload)\n"
         "Upload your **resume file** (PDF/DOCX/TXT) and paste the **job description**."
     )
     with gr.Row():
-        resume_file = gr.File(
-            label="Resume file (.pdf, .docx, .txt)",
-            file_types=[".pdf", ".docx", ".txt"],  # restrict picker
-            type="filepath"                         # returns a path we can open
-        )
-        jd_in = gr.Textbox(label="Job description", lines=16, placeholder="Paste JD text here")
-    out = gr.Textbox(label="Result", lines=16)
-    btn = gr.Button("Analyze")
+        with gr.Column(scale=5):
+            with gr.Group(elem_classes=["card"]):
+                resume_file = gr.File(
+                    label="Resume file (.pdf, .docx, .txt)",
+                    file_types=[".pdf", ".docx", ".txt"],
+                    type="filepath",
+                    height=150,
+                )
+                jd_in = gr.Textbox(label="Job description", lines=12, placeholder="Paste JD text here")
+                with gr.Row():
+                    btn = gr.Button("Analyze", variant="primary")
+                    clr = gr.Button("Clear")
+
+        with gr.Column(scale=7):
+            with gr.Group(elem_classes=["card"]):
+                out = gr.Textbox(label="Result", lines=16)
+
     btn.click(gradio_compare_with_file, inputs=[resume_file, jd_in], outputs=[out])
+    clr.click(lambda: (None, "", ""), outputs=[resume_file, jd_in, out])
 
     gr.Markdown(
         "### API\n"
@@ -178,22 +195,17 @@ with gr.Blocks() as demo:
         "- Health: `GET /healthz`"
     )
 
-# 1) Mount Gradio at a path WITH a trailing slash
+# 1) Mount Gradio at a path WITH trailing slash
 app = gr.mount_gradio_app(api, demo, path="/gradio/")
 
-# 2) Redirect root to the mounted path
-from fastapi.responses import RedirectResponse
-
+# 2) Redirect roots to the canonical UI path
 @api.get("/")
 def root():
-    # Always land on the canonical URL
     return RedirectResponse(url="/gradio/", status_code=307)
 
-# 3) If someone hits /gradio (no slash), redirect to /gradio/
 @api.get("/gradio")
 def gradio_no_slash():
     return RedirectResponse(url="/gradio/", status_code=307)
-
 
 if __name__ == "__main__":
     import uvicorn
