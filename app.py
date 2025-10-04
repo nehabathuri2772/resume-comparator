@@ -189,5 +189,5 @@ Paste your resume and a job description to get a quick overlap score powered by 
 
     with gr.Accordion("API (auto-exposed by Gradio)", open=False):
         gr.Markdown(
-            """
+            "")
 **Endpoint (Gradio):**
