@@ -279,7 +279,6 @@ Paste your resume and a job description to get a quick overlap score powered by 
             )
 
         with gr.TabItem("API"):
-            gr.Markdown(
-                """
+            gr.Markdown("")
 **Endpoint**
 
