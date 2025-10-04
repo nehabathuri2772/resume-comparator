@@ -17,7 +17,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")  # set this in Space → Settings → Variables
 MAX_TEXT_LEN = int(os.getenv("MAX_TEXT_LEN", "20000"))
 REQ_TIMEOUT = float(os.getenv("REQ_TIMEOUT", "40"))
 
-hf = InferenceClient(model=EMBED_MODEL, token=HF_TOKEN)
+hf = InferenceClient(model=EMBED_MODEL, token=HF_TOKEN, timeout=REQ_TIMEOUT)
 
 # 3) Helpers
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -37,7 +37,7 @@ def _backoff(attempt: int):
 @lru_cache(maxsize=256)
 def _embed_cached(text: str):
     try:
-        feats = hf.feature_extraction(text, timeout=REQ_TIMEOUT)
+        feats = hf.feature_extraction(text)
     except InferenceTimeoutError:
         return False, f"Inference API timed out after {REQ_TIMEOUT}s."
     except Exception as e:
