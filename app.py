@@ -6,6 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import gradio as gr
+import os, numpy as np
+from huggingface_hub import InferenceClient
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # swap if you want
+HF_TOKEN = os.getenv("HF_TOKEN")
+hf = InferenceClient(model=EMBED_MODEL, token=HF_TOKEN)
+
 
 # ----------------------------
 # 1) FastAPI app (global `app`)
@@ -32,29 +39,34 @@ class ComparePayload(BaseModel):
     resume_text: str
     job_description: str
 
+def _embed_remote(text: str) -> np.ndarray:
+    # calls HF Inference API (remote)
+    feats = hf.feature_extraction(text)  # returns list[list[float]]
+    arr = np.array(feats, dtype=np.float32)
+    if arr.ndim == 2:  # average over tokens if needed
+        arr = arr.mean(axis=0)
+    return arr
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) or 1.0
+    return float(np.dot(a, b) / denom)
+
 def compare_resumes(resume_text: str, jd_text: str) -> dict:
-    """
-    Replace this stub with your real logic. Keep it pure and fast for CPU Spaces.
-    Return a JSON-serializable dict.
-    """
-    # --- BEGIN: place your real logic here --------------------
-    # For now we just compute a very simple overlap score.
+    r_vec = _embed_remote(resume_text)
+    j_vec = _embed_remote(jd_text)
+    score = _cosine(r_vec, j_vec) * 100.0
+
     import re
-    tokenize = lambda s: set(re.findall(r"[a-zA-Z]+", s.lower()))
-    r = tokenize(resume_text)
-    j = tokenize(jd_text)
-    if not j:
-        score = 0.0
-    else:
-        score = len(r & j) / len(j)
+    tok = lambda s: set(re.findall(r"[a-zA-Z]+", s.lower()))
+    r, j = tok(resume_text), tok(jd_text)
 
     return {
-        "match_score": round(float(score) * 100, 2),
+        "match_score": round(score, 2),
         "matched_terms": sorted(list(r & j))[:50],
         "missing_terms": sorted(list(j - r))[:50],
-        "notes": "Replace this with your actual embedding / section-based logic."
+        "notes": f"Embeddings: {EMBED_MODEL} via Hugging Face Inference API (remote)."
     }
-    # --- END: place your real logic here ----------------------
+
 
 @api.post("/api/analyze")
 def analyze(payload: ComparePayload):
