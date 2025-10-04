@@ -187,7 +187,3 @@ Paste your resume and a job description to get a quick overlap score powered by 
         return "", "", "", gr.update(visible=False, value="")
     clear_btn.click(_clear, outputs=[score_card, chips_html, notes_md, json_out])
 
-    with gr.Accordion("API (auto-exposed by Gradio)", open=False):
-        gr.Markdown(
-            "")
-**Endpoint (Gradio):**
