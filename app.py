@@ -117,7 +117,7 @@ with gr.Blocks() as demo:
 
     with gr.Row():
         resume_file = gr.File(
-            label="Upload resume (PDF/DOCX/TXT)",
+            label="Upload resume here (PDF/DOCX/TXT)",
             file_types=[".pdf", ".docx", ".txt"],
             file_count="single",
         )
