@@ -178,29 +178,21 @@ with gr.Blocks() as demo:
         "- Health: `GET /healthz`"
     )
 
-# Mount Gradio onto FastAPI at "/"
-from fastapi.responses import HTMLResponse, RedirectResponse
+# 1) Mount Gradio at a path WITH a trailing slash
+app = gr.mount_gradio_app(api, demo, path="/gradio/")
 
-# Mount Gradio at /gradio (NOT at /)
-app = gr.mount_gradio_app(api, demo, path="/gradio")
+# 2) Redirect root to the mounted path
+from fastapi.responses import RedirectResponse
 
-# Lightweight index that embeds the app and avoids base-URL confusion
-@api.get("/", response_class=HTMLResponse)
+@api.get("/")
 def root():
-    return """
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Resume Comparator</title>
-        <style>html,body,iframe{height:100%;width:100%;margin:0;border:0}</style>
-      </head>
-      <body>
-        <iframe src="/gradio" allow="clipboard-read; clipboard-write"></iframe>
-      </body>
-    </html>
-    """
+    # Always land on the canonical URL
+    return RedirectResponse(url="/gradio/", status_code=307)
+
+# 3) If someone hits /gradio (no slash), redirect to /gradio/
+@api.get("/gradio")
+def gradio_no_slash():
+    return RedirectResponse(url="/gradio/", status_code=307)
 
 
 if __name__ == "__main__":
