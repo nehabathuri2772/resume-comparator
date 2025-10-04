@@ -113,7 +113,7 @@ def run(resume_file, jd_text):
 
 # -------- UI (file + JD only; text output) --------
 with gr.Blocks() as demo:
-    gr.Markdown("# Resume Comparator (file + JD → text output)")
+    gr.Markdown("# Resume Comparator")
 
     with gr.Row():
         resume_file = gr.File(
