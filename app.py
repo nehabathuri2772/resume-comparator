@@ -142,4 +142,4 @@ with gr.Blocks() as demo:
     gr.Markdown(f"Embeddings via HF Inference API • Model: `{EMBED_MODEL}`")
 
 # Launch (Gradio SDK)
-demo.queue().launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))
+demo.queue().launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "8015")))
