@@ -1,32 +1,36 @@
 
-# Force CPU wheels for torch on Spaces
+# ===== Torch CPU Wheels (for Spaces) =====
+--find-links https://storage.googleapis.com/torch-cpu/torch_stable.html
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-# ===== Core pins to fix your crash =====
-numpy==1.26.4          # <- solves "A module compiled for NumPy 1.x cannot run on 2.x"
-scipy<1.11             # (optional but safer with numpy 1.26)
-torch==2.2.2
-torchvision==0.17.2
+# ===== Core Scientific Stack =====
+numpy          # compatible with most PyTorch CPU wheels
+scipy             # optional but stable with numpy 1.26
 
-# ===== Your app libs =====
-gradio>=4.44.1
+# ===== PyTorch =====
+torch
+torchvision
+
+# ===== App / ML Libraries =====
+gradio
 fastapi
 uvicorn
-pydantic>=1.10,<3
-huggingface_hub>=0.24
-pypdf
-python-docx
+pydantic
+huggingface_hub
+scikit-learn
 sentence-transformers
 transformers
-scikit-learn
 
+# ===== PDF / Document Processing =====
 pypdf
-python-docx
-scikit-learn
-
-sentence-transformers
-transformers
 PyMuPDF
 python-docx
+
+# ===== Visualization & Word Analysis =====
 wordcloud
 matplotlib
+
+# ===== (Optional utilities if needed) =====
+# If you use caching / async inference, you can also add:
+# aiohttp
+# tqdm
