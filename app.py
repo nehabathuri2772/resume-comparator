@@ -1,32 +1,13 @@
 import os
 import gradio as gr
-import requests
-from products.API_product import run_api_product   # <-- implement
-from products.local_product import run_local_product  # <-- implement
+from products.API_product import run_api_product
+from products.local_product import run_local_product
 
-# --------- Settings ----------
-PORT = int(os.getenv("PORT", "8015"))     # systemd will pass PORT=8015
+PORT = int(os.getenv("PORT", "8015"))
 APP_TITLE = "Resume Comparator — Unified"
-# -----------------------------
 
-# Optional: provide a small adapter for the API-based call if your product expects HTTP
 def api_runner(resume_file, jd_text):
-    """
-    Example adapter: if your API product is an HTTP endpoint, call it here.
-    Otherwise, call your Python logic directly in products/api_product.py
-    """
-    # Example direct Python call (preferred, if available):
     return run_api_product(resume_file, jd_text)
-
-    # Example HTTP call instead (uncomment if your API is remote):
-    # url = os.getenv("API_URL", "https://example.com/compare")
-    # token = os.getenv("API_TOKEN", "")
-    # headers = {"Authorization": f"Bearer {token}"} if token else {}
-    # files = {"resume": open(resume_file, "rb")}
-    # data = {"jd": jd_text}
-    # r = requests.post(url, headers=headers, files=files, data=data, timeout=60)
-    # r.raise_for_status()
-    # return r.json().get("result", r.text)
 
 def local_runner(resume_file, jd_text):
     return run_local_product(resume_file, jd_text)
@@ -61,7 +42,6 @@ with gr.Blocks(title=APP_TITLE, fill_height=True) as demo:
 
     gr.Markdown("**One server, one port (8015)** • Choose a tab to run API or Local.")
 
-# Important: one process, one port
 if __name__ == "__main__":
-    demo.queue()  # good for concurrency
+    demo.queue()
     demo.launch(server_name="0.0.0.0", server_port=PORT, share=False)
