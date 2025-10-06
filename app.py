@@ -7,7 +7,7 @@ os.environ.setdefault("GRADIO_USE_CDN", "0")
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "0")
 
 # Import the two product entrypoints (these must exist)
-from API_product import run_api_product           # def run_api_product(resume_file, jd_text) -> str
+from api_product import run_api_product           # def run_api_product(resume_file, jd_text) -> str
 from local_product import run_local_product       # def run_local_product(resume_file, jd_text) -> str
 
 APP_TITLE = "Resume Comparator — Unified (API + Local)"
