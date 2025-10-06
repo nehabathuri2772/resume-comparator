@@ -104,7 +104,7 @@ def compare_resume_to_jd(resume_text: str, jd_text: str) -> str:
     return "\n".join(lines)
 
 # -------- Gradio handlers --------
-def run(resume_file, jd_text):
+def run_api_product(resume_file, jd_text):
     try:
         resume_txt = read_resume_file(resume_file)
         return compare_resume_to_jd(resume_txt, jd_text)
