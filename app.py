@@ -394,7 +394,7 @@ if __name__ == "__main__":
 
 # app.py
 import gradio as gr
-
+import os
 from local_model import (
     extract_text_from_fileobj,
     preprocess_text,
@@ -591,4 +591,5 @@ if __name__ == "__main__":
     demo = build_ui()
     demo.queue().launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "8015")))
     # demo.launch(server_name="0.0.0.0")
+
 
