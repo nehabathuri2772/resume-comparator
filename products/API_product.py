@@ -1,21 +1,17 @@
-import os, re
+# products/API_product.py
+import os
+import re
 import numpy as np
-import gradio as gr
 from huggingface_hub import InferenceClient
-
-# -------- Space/Gradio config (single port; no CDN) --------
-os.environ["GRADIO_USE_MULTIPLE_PORTS"] = "0"
-os.environ.setdefault("GRADIO_USE_CDN", "0")
-os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "0")
 
 # -------- App config --------
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-HF_TOKEN    = os.getenv("HF_TOKEN")                      # set in Space → Settings → Variables
+HF_TOKEN    = os.getenv("HF_TOKEN")                 # set in env / Space → Settings → Variables
 MAX_LEN     = int(os.getenv("MAX_TEXT_LEN", "20000"))
 REQ_TIMEOUT = float(os.getenv("REQ_TIMEOUT", "40"))
 
 # HF Inference API client (timeout belongs on the client)
-hf = InferenceClient(model=EMBED_MODEL, token=HF_TOKEN, timeout=REQ_TIMEOUT)
+_hf = InferenceClient(model=EMBED_MODEL, token=HF_TOKEN, timeout=REQ_TIMEOUT)
 
 # -------- Utilities --------
 def _trim(s: str) -> str:
@@ -31,10 +27,12 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 def _embed(text: str) -> np.ndarray:
     if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN is not set (add it in Space → Settings → Variables).")
-    feats = hf.feature_extraction(_trim(text))           # no timeout kwarg here
+        raise RuntimeError(
+            "HF_TOKEN is not set. Add it in your environment or Space → Settings → Variables."
+        )
+    feats = _hf.feature_extraction(_trim(text))     # do not pass timeout here (already on client)
     arr = np.array(feats, dtype=np.float32)
-    if arr.ndim == 2:                                    # token-level → mean pool
+    if arr.ndim == 2:                               # token-level → mean pool
         arr = arr.mean(axis=0)
     if arr.ndim != 1:
         raise RuntimeError("Unexpected embedding shape from the Inference API.")
@@ -71,7 +69,7 @@ def read_resume_file(file_obj) -> str:
         return _read_docx(path)
     if name.endswith(".txt"):
         return _read_txt(path)
-    # best-effort fallback as text
+    # best-effort fallback
     return _read_txt(path)
 
 # -------- Core scoring --------
@@ -103,44 +101,14 @@ def compare_resume_to_jd(resume_text: str, jd_text: str) -> str:
     ]
     return "\n".join(lines)
 
-# -------- Gradio handlers --------
-def run_api_product(resume_file, jd_text):
+# -------- Public API for the unified app --------
+def run_api_product(resume_file, jd_text) -> str:
+    """
+    Adapter used by your unified UI (or by app_api.py below).
+    Accepts a Gradio File object + text, returns a result string.
+    """
     try:
         resume_txt = read_resume_file(resume_file)
         return compare_resume_to_jd(resume_txt, jd_text)
     except Exception as e:
         return f"ERROR: {type(e).__name__}: {e}"
-
-# -------- UI (file + JD only; text output) --------
-with gr.Blocks() as demo:
-    gr.Markdown("# Resume Comparator")
-
-    with gr.Row():
-        resume_file = gr.File(
-            label="Upload resume here (PDF/DOCX/TXT)",
-            file_types=[".pdf", ".docx", ".txt"],
-            file_count="single",
-        )
-        jd_text = gr.Textbox(
-            label="Job description (text)",
-            lines=16,
-            placeholder="Paste the job description here"
-        )
-
-    with gr.Row():
-        go = gr.Button("Analyze", variant="primary")
-        clear = gr.Button("Clear")
-
-    result = gr.Textbox(label="Result", lines=18)
-
-    go.click(run, inputs=[resume_file, jd_text], outputs=[result])
-
-    def _clear():
-        return None, ""
-    clear.click(_clear, outputs=[resume_file, jd_text])
-    
-    gr.Markdown(f"Embeddings via HF Inference API • Model: `{EMBED_MODEL}`")
-
-# Launch (Gradio SDK)
-#demo.queue().launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "8015")))
-demo.queue().launch(share=True)
