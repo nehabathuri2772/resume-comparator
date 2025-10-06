@@ -1,47 +1,74 @@
 import os
 import gradio as gr
-from products.API_product import run_api_product
-from products.local_product import run_local_product
 
+# One-port friendly settings (good for systemd & your VM)
+os.environ.setdefault("GRADIO_USE_MULTIPLE_PORTS", "0")
+os.environ.setdefault("GRADIO_USE_CDN", "0")
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "0")
+
+# Import the two product entrypoints (these must exist)
+from api_product import run_api_product           # def run_api_product(resume_file, jd_text) -> str
+from local_product import run_local_product       # def run_local_product(resume_file, jd_text) -> str
+
+APP_TITLE = "Resume Comparator — Unified (API + Local)"
 PORT = int(os.getenv("PORT", "8015"))
-APP_TITLE = "Resume Comparator — Unified"
 
-def api_runner(resume_file, jd_text):
-    return run_api_product(resume_file, jd_text)
+def _clear():
+    # Return values must match the outputs list order
+    return None, ""  # clears file, clears textbox
 
-def local_runner(resume_file, jd_text):
-    return run_local_product(resume_file, jd_text)
-
-with gr.Blocks(title=APP_TITLE, fill_height=True) as demo:
+with gr.Blocks(title=APP_TITLE) as demo:
     gr.Markdown(f"# {APP_TITLE}")
 
     with gr.Tabs():
-        with gr.Tab("API Product"):
+        # ------------- Tab 1: API (HF Inference) -------------
+        with gr.TabItem("API (HF Inference)"):
             with gr.Row():
-                resume_api = gr.File(label="Upload resume (PDF/DOCX/TXT)", file_types=[".pdf", ".docx", ".txt"])
-                jd_api = gr.Textbox(label="Job description", lines=16, placeholder="Paste the job description here")
+                api_resume = gr.File(
+                    label="Upload resume (PDF/DOCX/TXT)",
+                    file_types=[".pdf", ".docx", ".txt"],
+                    file_count="single",
+                )
+                api_jd = gr.Textbox(
+                    label="Job description (text)",
+                    lines=16,
+                    placeholder="Paste the job description here"
+                )
+
             with gr.Row():
-                run_api_btn = gr.Button("Run API Comparison", variant="primary")
-                clear_api_btn = gr.Button("Clear")
-            result_api = gr.Textbox(label="Result", lines=18)
+                api_go = gr.Button("Analyze via API", variant="primary")
+                api_clear = gr.Button("Clear")
 
-            run_api_btn.click(api_runner, inputs=[resume_api, jd_api], outputs=result_api)
-            clear_api_btn.click(lambda: (None, ""), outputs=[resume_api, jd_api])
+            api_result = gr.Textbox(label="Result", lines=18)
+            api_go.click(run_api_product, inputs=[api_resume, api_jd], outputs=[api_result])
+            api_clear.click(_clear, outputs=[api_resume, api_jd])
 
-        with gr.Tab("Local Product"):
+        # ------------- Tab 2: Local (on-VM) -------------
+        with gr.TabItem("Local (On-VM)"):
             with gr.Row():
-                resume_loc = gr.File(label="Upload resume (PDF/DOCX/TXT)", file_types=[".pdf", ".docx", ".txt"])
-                jd_loc = gr.Textbox(label="Job description", lines=16, placeholder="Paste the job description here")
+                loc_resume = gr.File(
+                    label="Upload resume (PDF/DOCX/TXT)",
+                    file_types=[".pdf", ".docx", ".txt"],
+                    file_count="single",
+                )
+                loc_jd = gr.Textbox(
+                    label="Job description (text)",
+                    lines=16,
+                    placeholder="Paste the job description here"
+                )
+
             with gr.Row():
-                run_loc_btn = gr.Button("Run Local Comparison", variant="primary")
-                clear_loc_btn = gr.Button("Clear")
-            result_loc = gr.Textbox(label="Result", lines=18)
+                loc_go = gr.Button("Analyze locally", variant="primary")
+                loc_clear = gr.Button("Clear")
 
-            run_loc_btn.click(local_runner, inputs=[resume_loc, jd_loc], outputs=result_loc)
-            clear_loc_btn.click(lambda: (None, ""), outputs=[resume_loc, jd_loc])
+            loc_result = gr.Textbox(label="Result", lines=18)
+            loc_go.click(run_local_product, inputs=[loc_resume, loc_jd], outputs=[loc_result])
+            loc_clear.click(_clear, outputs=[loc_resume, loc_jd])
 
-    gr.Markdown("**One server, one port (8015)** • Choose a tab to run API or Local.")
+    gr.Markdown(
+        "Tip: the **API** tab calls Hugging Face Inference API (needs `HF_TOKEN`). "
+        "The **Local** tab runs entirely on the VM."
+    )
 
 if __name__ == "__main__":
-    demo.queue()
-    demo.launch(server_name="0.0.0.0", server_port=PORT, share=False)
+    demo.queue().launch(server_name="0.0.0.0", server_port=PORT, share=False)
