@@ -34,3 +34,5 @@ matplotlib
 # If you use caching / async inference, you can also add:
 # aiohttp
 # tqdm
+
+prometheus_client==0.16.*
