@@ -457,6 +457,21 @@ from local_model import (
 )
 from api_model import calculate_similarity_api, check_api_health  # API mode (HF Inference)
 
+from prometheus_client import start_http_server, Counter, Histogram
+
+# --- Prometheus metrics ---
+ANALYZE_REQUESTS = Counter(
+    "resume_analyze_requests_total",
+    "Total number of analyze_resumes requests processed",
+    ["mode"],
+)
+ANALYZE_DURATION = Histogram(
+    "resume_analyze_duration_seconds",
+    "Duration of analyze_resumes execution in seconds",
+    ["mode"],
+)
+
+
 def _verdict_html(fname: str, sim_pct: float) -> str:
     if sim_pct >= 80:
         return f"<h3 style='color:green;'>✅ Best Match: {fname} ({sim_pct:.2f}%)</h3>"
@@ -478,87 +493,87 @@ def _project_fit_verdict_from_score(score: float) -> str:
             f"Consider highlighting different aspects of your work.</p>")
 
 def analyze_resumes(files, job_description: str, mode: str):
-    if not files or not job_description.strip():
-        return 0.0, "Please upload resumes and paste a job description.", "", "", "", "", "", "", "", ""
+    # Normalize/guard label value
+    mode_label = mode if mode in {"sbert", "bert", "api"} else "unknown"
 
-    # Fast fail if API mode is selected but HF token/model is not ready
-    if mode == "api":
-        ok, msg = check_api_health()
-        if not ok:
-            return (0.0,
-                    f"<p style='color:red;'>HF Inference API error: {msg}</p>",
-                    "", "", "", "", "", "", "", "")
+    ANALYZE_REQUESTS.labels(mode=mode_label).inc()
+    with ANALYZE_DURATION.labels(mode=mode_label).time():
+        if not files or not job_description.strip():
+            return 0.0, "Please upload resumes and paste a job description.", "", "", "", "", "", "", "", ""
 
-    results = []
-    first_error = None
+        # Fast fail if API mode is selected but HF token/model is not ready
+        if mode == "api":
+            ok, msg = check_api_health()
+            if not ok:
+                return (0.0,
+                        f"<p style='color:red;'>HF Inference API error: {msg}</p>",
+                        "", "", "", "", "", "", "", "")
 
-    for file in files:
-        try:
-            resume_text, fname = extract_text_from_fileobj(file)
-            if resume_text.strip().startswith("[Error"):
-                # file read failure — skip file but note error
-                first_error = first_error or resume_text
+        results = []
+        first_error = None
+
+        for file in files:
+            try:
+                resume_text, fname = extract_text_from_fileobj(file)
+                if resume_text.strip().startswith("[Error"):
+                    first_error = first_error or resume_text
+                    continue
+
+                cleaned_resume = preprocess_text(resume_text)
+                cleaned_job    = preprocess_text(job_description)
+
+                if mode == "api":
+                    sim_pct = calculate_similarity_api(cleaned_resume, cleaned_job)
+                else:
+                    sim_pct = calculate_similarity(cleaned_resume, cleaned_job, mode=mode)
+
+                results.append((sim_pct, resume_text, fname))
+
+            except Exception as e:
+                if first_error is None:
+                    first_error = f"{type(e).__name__}: {e}"
                 continue
 
-            cleaned_resume = preprocess_text(resume_text)
-            cleaned_job    = preprocess_text(job_description)
+        if not results:
+            msg = first_error or "No valid resumes were provided."
+            return (0.0,
+                    f"<p style='color:red;'>Analysis failed: {msg}</p>",
+                    "", "", "", "", "", "", "", "")
 
-            if mode == "api":
-                sim_pct = calculate_similarity_api(cleaned_resume, cleaned_job)
-            else:
-                sim_pct = calculate_similarity(cleaned_resume, cleaned_job, mode=mode)
+        best = max(results, key=lambda x: x[0])
+        sim_pct, resume_text, fname = best
 
-            results.append((sim_pct, resume_text, fname))
+        missing_dict, suggestions_text = analyze_resume_keywords(resume_text, job_description)
+        missing_formatted = format_missing_keywords(missing_dict)
+        job_suggestions = suggest_jobs(resume_text)
+        projects_section = extract_projects_section(resume_text)
 
-        except Exception as e:
-            # Capture first embedding/API error so the user gets a useful message
-            if first_error is None:
-                first_error = f"{type(e).__name__}: {e}"
-            continue
-
-    if not results:
-        # If everything failed, surface the first error instead of a vague message
-        msg = first_error or "No valid resumes were provided."
-        return (0.0,
-                f"<p style='color:red;'>Analysis failed: {msg}</p>",
-                "", "", "", "", "", "", "", "")
-
-    # Best match
-    best = max(results, key=lambda x: x[0])
-    sim_pct, resume_text, fname = best
-
-    missing_dict, suggestions_text = analyze_resume_keywords(resume_text, job_description)
-    missing_formatted = format_missing_keywords(missing_dict)
-    job_suggestions = suggest_jobs(resume_text)
-    projects_section = extract_projects_section(resume_text)
-
-    # Project fit
-    if projects_section.startswith("Could not"):
-        project_fit_verdict = "Cannot analyze project fit as no projects section was found."
-    else:
-        cleaned_projects = preprocess_text(projects_section)
-        cleaned_job      = preprocess_text(job_description)
-        if cleaned_projects:
-            try:
-                if mode == "api":
-                    pscore = calculate_similarity_api(cleaned_projects, cleaned_job)
-                else:
-                    pscore = calculate_similarity(cleaned_projects, cleaned_job, mode=mode)
-                project_fit_verdict = _project_fit_verdict_from_score(pscore)
-            except Exception as e:
-                project_fit_verdict = f"Could not compute project fit (embedding error: {type(e).__name__}: {e})."
+        if projects_section.startswith("Could not"):
+            project_fit_verdict = "Cannot analyze project fit as no projects section was found."
         else:
-            project_fit_verdict = "Projects section is empty or contains no relevant text to analyze."
+            cleaned_projects = preprocess_text(projects_section)
+            cleaned_job      = preprocess_text(job_description)
+            if cleaned_projects:
+                try:
+                    if mode == "api":
+                        pscore = calculate_similarity_api(cleaned_projects, cleaned_job)
+                    else:
+                        pscore = calculate_similarity(cleaned_projects, cleaned_job, mode=mode)
+                    project_fit_verdict = _project_fit_verdict_from_score(pscore)
+                except Exception as e:
+                    project_fit_verdict = f"Could not compute project fit (embedding error: {type(e).__name__}: {e})."
+            else:
+                project_fit_verdict = "Projects section is empty or contains no relevant text to analyze."
 
-    resume_keywords_text = extract_top_keywords(preprocess_text(resume_text))
-    jd_keywords_text     = extract_top_keywords(preprocess_text(job_description))
-    verdict = _verdict_html(fname, sim_pct)
+        resume_keywords_text = extract_top_keywords(preprocess_text(resume_text))
+        jd_keywords_text     = extract_top_keywords(preprocess_text(job_description))
+        verdict = _verdict_html(fname, sim_pct)
 
-    return (
-        float(sim_pct), verdict, missing_formatted, suggestions_text,
-        job_suggestions, projects_section, project_fit_verdict, resume_keywords_text, jd_keywords_text, fname
-    )
-
+        return (
+            float(sim_pct), verdict, missing_formatted, suggestions_text,
+            job_suggestions, projects_section, project_fit_verdict, resume_keywords_text, jd_keywords_text, fname
+        )
+    
 def clear_inputs():
     # MUST return one value per output we wire in clear_btn.click
     # outputs: file_in, job_desc, mode, score_slider, score_text, missing_out, suggestions_out,
@@ -646,6 +661,7 @@ if __name__ == "__main__":
     demo = build_ui()
     demo.queue().launch(server_port=int(os.getenv("PORT", "7860")))
     # demo.launch(server_name="0.0.0.0")
+
 
 
 
