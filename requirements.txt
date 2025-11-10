@@ -35,4 +35,5 @@ matplotlib
 # aiohttp
 # tqdm
 
-prometheus_client==0.16.*
+prometheus_client
+
