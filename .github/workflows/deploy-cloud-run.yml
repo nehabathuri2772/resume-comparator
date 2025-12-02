@@ -50,6 +50,8 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
       - name: Deploy to Cloud Run
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           gcloud run deploy "${{ env.SERVICE }}" \
             --image="$IMAGE_TAG" \
@@ -61,7 +63,7 @@ jobs:
             --memory=4Gi \
             --timeout=900 \
             --concurrency=1 \
-            --set-env-vars=METRICS_PORT=8000 \
+            --set-env-vars=METRICS_PORT=8000,HF_HOME=/tmp/hf_cache,TRANSFORMERS_CACHE=/tmp/hf_cache,HF_TOKEN=$HF_TOKEN \
             --quiet
 
       - name: Show service URL
