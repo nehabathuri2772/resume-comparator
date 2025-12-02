@@ -7,8 +7,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
+      - name: Skip if webhook missing
+        if: env.DISCORD_WEBHOOK_URL == ''
+        run: echo "DISCORD_WEBHOOK_URL not set; skipping Discord notification."
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
       - name: Send Discord notification with commit details
+        if: env.DISCORD_WEBHOOK_URL != ''
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
