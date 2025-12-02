@@ -22,4 +22,4 @@ Setup steps:
 - Add GitHub secrets: `GCP_PROJECT_ID`, `GCP_REGION`, `CLOUD_RUN_SERVICE` (desired service name), and `GCP_SA_KEY` (the JSON key contents).
 
 Usage:
-- Push to `main` or run the workflow manually. On success, the job prints the Cloud Run service URL you can share.
+- Push to `main` or run the workflow manually. On success, the job prints the Cloud Run service URL you can share
