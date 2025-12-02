@@ -1,6 +1,6 @@
 ---
 title: Resume Analyser
-emoji: ????
+emoji: 🚀
 colorFrom: pink
 colorTo: indigo
 sdk: gradio
