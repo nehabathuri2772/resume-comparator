@@ -1,0 +1,60 @@
+name: Deploy to GCP Cloud Run
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
+  ARTIFACT_REPO: resume-comparator
+  IMAGE_NAME: resume-comparator
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Artifact Registry auth
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Ensure Artifact Registry repository
+        run: |
+          gcloud artifacts repositories describe "${{ env.ARTIFACT_REPO }}" --location="${{ env.REGION }}" \
+            || gcloud artifacts repositories create "${{ env.ARTIFACT_REPO }}" \
+                --repository-format=docker --location="${{ env.REGION }}" \
+                --description="Docker repo for Resume Comparator"
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE_TAG" .
+          docker push "$IMAGE_TAG"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${{ env.SERVICE }}" \
+            --image="$IMAGE_TAG" \
+            --region="${{ env.REGION }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=7860 \
+            --set-env-vars=METRICS_PORT=8000 \
+            --quiet
+
+      - name: Show service URL
+        run: gcloud run services describe "${{ env.SERVICE }}" --region="${{ env.REGION }}" --format='value(status.url)'
