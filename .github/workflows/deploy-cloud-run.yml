@@ -57,6 +57,10 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --port=7860 \
+            --cpu=2 \
+            --memory=4Gi \
+            --timeout=900 \
+            --concurrency=1 \
             --set-env-vars=METRICS_PORT=8000 \
             --quiet
 
